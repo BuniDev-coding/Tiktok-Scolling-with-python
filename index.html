@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Hand Control - Sharp Version</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <style>
+        body {
+            background: #0f172a;
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+        .container {
+            position: relative;
+            border-radius: 20px;
+            overflow: hidden;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+            border: 4px solid #334155;
+        }
+        #video-input {
+            display: none;
+        }
+        #output-canvas {
+            width: 640px;
+            height: 480px;
+            transform: scaleX(-1);
+            background: #1e293b;
+        }
+        .status-panel {
+            margin-top: 20px;
+            padding: 15px 30px;
+            background: #1e293b;
+            border-radius: 12px;
+            text-align: center;
+            min-width: 300px;
+        }
+        .status {
+            font-size: 1.2rem;
+            color: #38bdf8;
+            font-weight: bold;
+        }
+        .hint {
+            color: #94a3b8;
+            margin-top: 10px;
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+
+    <h2 style="margin-bottom: 10px;">🖐️ AI Hand Scroller (Sharp AI)</h2>
+    
+    <div class="container">
+        <video id="video-input"></video>
+        <canvas id="output-canvas"></canvas>
+    </div>
+
+    <div class="status-panel">
+        <div id="hand-status" class="status">กำลังเริ่มต้น AI...</div>
+        <div id="action-status" style="color: #4ade80; margin-top: 5px; font-weight: bold; min-height: 1.5em;"></div>
+        <div class="hint">ปัดมือขึ้น -> คลิปถัดไป | ปัดมือลง -> คลิปก่อนหน้า</div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('video-input');
+        const canvasElement = document.getElementById('output-canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const handStatus = document.getElementById('hand-status');
+        const actionStatus = document.getElementById('action-status');
+
+        let prevY = null;
+        let lastScrollTime = 0;
+        const cooldown = 1000; // 1 second
+        const threshold = 0.08; // Normalized pixels
+
+        async function sendScroll(direction) {
+            try {
+                await fetch('http://localhost:5000/scroll', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ direction: direction })
+                });
+                actionStatus.innerText = `เลื่อนไป${direction === 'up' ? 'หน้า (NEXT)' : 'หลัง (PREV)'}!`;
+                setTimeout(() => actionStatus.innerText = '', 800);
+            } catch (err) {
+                console.error('Bridge not running?', err);
+                handStatus.innerText = "❌ กรุณารัน bridge.py ก่อน!";
+                handStatus.style.color = "#f87171";
+            }
+        }
+
+        function onResults(results) {
+            // Draw Hand
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+            
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                handStatus.innerText = "✅ พร้อมใช้งาน! (ตรวจพบมือ)";
+                handStatus.style.color = "#38bdf8";
+                
+                for (const landmarks of results.multiHandLandmarks) {
+                    drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#38bdf8', lineWidth: 5});
+                    drawLandmarks(canvasCtx, landmarks, {color: '#f472b6', lineWidth: 2});
+
+                    const currentY = landmarks[9].y; // Middle finger base
+                    const currentTime = Date.now();
+
+                    if (prevY !== null && (currentTime - lastScrollTime > cooldown)) {
+                        const dy = currentY - prevY;
+
+                        if (dy < -threshold) {
+                            sendScroll('up');
+                            lastScrollTime = currentTime;
+                        } else if (dy > threshold) {
+                            sendScroll('down');
+                            lastScrollTime = currentTime;
+                        }
+                    }
+                    prevY = currentY;
+                }
+            } else {
+                handStatus.innerText = "🔍 กรุณาวางมือหน้ากล้อง...";
+                handStatus.style.color = "#94a3b8";
+                prevY = null;
+            }
+            canvasCtx.restore();
+        }
+
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
+        });
+        
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 640,
+            height: 480
+        });
+        camera.start();
+    </script>
+</body>
+</html>
